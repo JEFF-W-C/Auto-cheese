@@ -2,177 +2,227 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <title>自走棋：格子對戰與技能系統</title>
+    <title>自走棋：備戰與戰鬥循環</title>
     <style>
-        body { display: flex; flex-direction: column; align-items: center; background: #1a1a1a; color: #eee; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
-        canvas { border: 4px solid #444; background: #2c3e50; cursor: crosshair; }
-        .ui-panel { margin: 15px; padding: 10px; background: #333; border-radius: 8px; width: 600px; display: flex; justify-content: space-between; }
-        .log { font-size: 14px; color: #f1c40f; }
+        body { display: flex; flex-direction: column; align-items: center; background: #1a1a1a; color: #eee; font-family: sans-serif; margin: 0; overflow: hidden; }
+        #ui-layer { width: 640px; display: flex; justify-content: space-between; padding: 10px; background: #333; }
+        canvas { border: 2px solid #555; background: #2c3e50; }
+        .timer { font-size: 24px; font-weight: bold; color: #f1c40f; }
+        .phase-name { font-size: 20px; }
     </style>
 </head>
 <body>
 
-    <h2>聯盟戰棋模擬 (格子版)</h2>
-    <div class="ui-panel">
-        <div id="status">戰鬥進行中...</div>
-        <div class="log" id="combatLog">等待技能觸發...</div>
+    <div id="ui-layer">
+        <div class="phase-name" id="phaseDisplay">階段：備備戰中</div>
+        <div class="timer" id="timerDisplay">30s</div>
     </div>
-    <canvas id="gameCanvas" width="640" height="480"></canvas>
+    <canvas id="gameCanvas" width="640" height="600"></canvas>
 
 <script>
 const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
-const logText = document.getElementById('combatLog');
+const phaseDisplay = document.getElementById('phaseDisplay');
+const timerDisplay = document.getElementById('timerDisplay');
 
-// 1. 格子配置 (簡單的正方形網格)
+// 遊戲常量
 const TILE_SIZE = 80;
-const ROWS = 6;
+const ROWS = 5; // 戰鬥區域
 const COLS = 8;
+const SHOP_Y = 480; // 商店起始高度
 
-// 2. 棋子類別
-class Champion {
-    constructor(name, gridX, gridY, color, team) {
-        this.name = name;
-        this.gridX = gridX;
-        this.gridY = gridY;
-        this.color = color;
-        this.team = team;
-        
-        // 數值設定
-        this.hp = 200;
-        this.maxHp = 200;
-        this.mp = 0;
-        this.maxMp = 100;
-        this.atk = 20;
-        this.range = 1; // 攻擊距離(格數)
-        this.isCasting = false;
-        
-        this.updatePixelPos();
+// 遊戲狀態
+const PHASES = { PREP: '備戰階段', BATTLE: '戰鬥階段' };
+let currentPhase = PHASES.PREP;
+let timeLeft = 30;
+let lastTime = Date.now();
+
+// 棋子池
+const CHAMP_POOL = ["蓋倫", "諾叔", "艾希", "拉克絲", "犽宿"];
+
+// 商店資料
+let shopSlots = [];
+let draggingItem = null;
+let playerUnit = null; // 玩家場上的棋子
+let enemyUnit = null;  // 電腦棋子
+
+function initShop() {
+    shopSlots = [];
+    for(let i=0; i<5; i++) {
+        const name = CHAMP_POOL[Math.floor(Math.random() * CHAMP_POOL.length)];
+        shopSlots.push({
+            name: name,
+            x: i * 120 + 60,
+            y: SHOP_Y + 60,
+            width: 100,
+            height: 60,
+            color: "#8e44ad"
+        });
+    }
+}
+
+// 初始化一個電腦對手
+function spawnEnemy() {
+    enemyUnit = {
+        name: "電腦小兵",
+        gridX: 6,
+        gridY: 2,
+        hp: 200, maxHp: 200, mp: 0, maxMp: 100,
+        color: "#e74c3c", team: "Red",
+        x: 0, y: 0
+    };
+    updatePixelPos(enemyUnit);
+}
+
+function updatePixelPos(unit) {
+    unit.x = unit.gridX * TILE_SIZE + TILE_SIZE / 2;
+    unit.y = unit.gridY * TILE_SIZE + TILE_SIZE / 2;
+}
+
+// 滑鼠事件
+let mouseX = 0, mouseY = 0;
+canvas.addEventListener('mousedown', (e) => {
+    if (currentPhase !== PHASES.PREP) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = e.clientX - rect.left;
+    const y = e.clientY - rect.top;
+
+    shopSlots.forEach((slot, index) => {
+        if (x > slot.x - 50 && x < slot.x + 50 && y > slot.y - 30 && y < slot.y + 30) {
+            draggingItem = { ...slot, shopIndex: index };
+        }
+    });
+});
+
+canvas.addEventListener('mousemove', (e) => {
+    const rect = canvas.getBoundingClientRect();
+    mouseX = e.clientX - rect.left;
+    mouseY = e.clientY - rect.top;
+});
+
+canvas.addEventListener('mouseup', (e) => {
+    if (draggingItem) {
+        // 判斷是否放在戰鬥格內 (前三行)
+        const gx = Math.floor(mouseX / TILE_SIZE);
+        const gy = Math.floor(mouseY / TILE_SIZE);
+
+        if (gy < ROWS && gx < COLS) {
+            playerUnit = {
+                name: draggingItem.name,
+                gridX: gx, gridY: gy,
+                hp: 200, maxHp: 200, mp: 0, maxMp: 100,
+                color: "#3498db", team: "Blue"
+            };
+            updatePixelPos(playerUnit);
+            shopSlots[draggingItem.shopIndex] = { name: "已售出", color: "#555" }; // 買完變灰色
+        }
+        draggingItem = null;
+    }
+});
+
+// 戰鬥邏輯
+function battleLogic() {
+    if (!playerUnit || !enemyUnit) return;
+    
+    // 簡單的互相扣血
+    if (Math.abs(playerUnit.gridX - enemyUnit.gridX) + Math.abs(playerUnit.gridY - enemyUnit.gridY) <= 1) {
+        playerUnit.hp -= 0.5;
+        enemyUnit.hp -= 0.5;
+    } else {
+        // 向對方移動
+        if (playerUnit.gridX < enemyUnit.gridX) playerUnit.gridX++;
+        updatePixelPos(playerUnit);
+    }
+}
+
+function draw() {
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    // 1. 畫格子
+    ctx.strokeStyle = "#444";
+    for(let i=0; i<=COLS; i++) {
+        ctx.beginPath(); ctx.moveTo(i*TILE_SIZE, 0); ctx.lineTo(i*TILE_SIZE, ROWS*TILE_SIZE); ctx.stroke();
+    }
+    for(let j=0; j<=ROWS; j++) {
+        ctx.beginPath(); ctx.moveTo(0, j*TILE_SIZE); ctx.lineTo(COLS*TILE_SIZE, j*TILE_SIZE); ctx.stroke();
     }
 
-    // 將格子坐標轉為畫面上像素坐標
-    updatePixelPos() {
-        this.x = this.gridX * TILE_SIZE + TILE_SIZE / 2;
-        this.y = this.gridY * TILE_SIZE + TILE_SIZE / 2;
-    }
-
-    draw() {
-        // 畫血條 (紅色背景，綠色當前血量)
-        ctx.fillStyle = '#ff4d4d';
-        ctx.fillRect(this.x - 30, this.y - 45, 60, 6);
-        ctx.fillStyle = '#2ecc71';
-        ctx.fillRect(this.x - 30, this.y - 45, (this.hp / this.maxHp) * 60, 6);
-
-        // 畫魔力條 (藍色)
-        ctx.fillStyle = '#3498db';
-        ctx.fillRect(this.x - 30, this.y - 37, (this.mp / this.maxMp) * 60, 4);
-
-        // 畫棋子本體
-        ctx.beginPath();
-        ctx.arc(this.x, this.y, 25, 0, Math.PI * 2);
-        ctx.fillStyle = this.isCasting ? '#f1c40f' : this.color; // 施法時變金色
-        ctx.shadowBlur = this.isCasting ? 20 : 0;
-        ctx.shadowColor = "yellow";
-        ctx.fill();
-        ctx.closePath();
-        ctx.shadowBlur = 0;
-
+    // 2. 畫商店區
+    ctx.fillStyle = "#444";
+    ctx.fillRect(0, SHOP_Y, canvas.width, 120);
+    shopSlots.forEach(slot => {
+        ctx.fillStyle = slot.color || "#8e44ad";
+        ctx.fillRect(slot.x - 50, slot.y - 30, 100, 60);
         ctx.fillStyle = "white";
         ctx.textAlign = "center";
-        ctx.fillText(this.name, this.x, this.y + 5);
+        ctx.fillText(slot.name, slot.x, slot.y + 5);
+    });
+
+    // 3. 畫棋子
+    if (playerUnit) drawUnit(playerUnit);
+    if (enemyUnit) drawUnit(enemyUnit);
+
+    // 4. 畫拖曳中的影子
+    if (draggingItem) {
+        ctx.globalAlpha = 0.5;
+        ctx.fillStyle = "yellow";
+        ctx.fillRect(mouseX - 50, mouseY - 30, 100, 60);
+        ctx.globalAlpha = 1.0;
     }
+}
 
-    // 邏輯判斷
-    act(target) {
-        if (!target || target.hp <= 0) return;
+function drawUnit(unit) {
+    if (unit.hp <= 0) return;
+    ctx.fillStyle = unit.color;
+    ctx.beginPath();
+    ctx.arc(unit.x, unit.y, 25, 0, Math.PI*2);
+    ctx.fill();
+    // 血條
+    ctx.fillStyle = "red";
+    ctx.fillRect(unit.x - 25, unit.y - 40, 50, 5);
+    ctx.fillStyle = "green";
+    ctx.fillRect(unit.x - 25, unit.y - 40, (unit.hp/unit.maxHp)*50, 5);
+    ctx.fillStyle = "white";
+    ctx.fillText(unit.name, unit.x, unit.y + 5);
+}
 
-        // 計算格子距離 (曼哈頓距離)
-        const dist = Math.abs(this.gridX - target.gridX) + Math.abs(this.gridY - target.gridY);
-
-        if (dist <= this.range) {
-            // 在範圍內：攻擊並增加魔力
-            this.attack(target);
-        } else {
-            // 不在範圍內：向目標移動一格
-            this.moveTowards(target);
+// 核心循環與計時器
+function update() {
+    const now = Date.now();
+    if (now - lastTime >= 1000) {
+        timeLeft--;
+        lastTime = now;
+        if (timeLeft <= 0) {
+            // 切換階段
+            if (currentPhase === PHASES.PREP) {
+                currentPhase = PHASES.BATTLE;
+                timeLeft = 30;
+                spawnEnemy();
+            } else {
+                currentPhase = PHASES.PREP;
+                timeLeft = 30;
+                playerUnit = null; // 回合結束清空場地
+                enemyUnit = null;
+                initShop();
+            }
         }
     }
 
-    moveTowards(target) {
-        if (this.gridX < target.gridX) this.gridX++;
-        else if (this.gridX > target.gridX) this.gridX--;
-        else if (this.gridY < target.gridY) this.gridY++;
-        else if (this.gridY > target.gridY) this.gridY--;
-        
-        this.updatePixelPos();
+    if (currentPhase === PHASES.BATTLE) {
+        battleLogic();
     }
 
-    attack(target) {
-        // 普攻
-        target.hp -= this.atk;
-        this.mp += 20; // 每次攻擊回藍
-        
-        // 檢查是否滿魔放技能
-        if (this.mp >= this.maxMp) {
-            this.castSkill(target);
-        }
-    }
+    phaseDisplay.innerText = `階段：${currentPhase}`;
+    timerDisplay.innerText = `${timeLeft}s`;
 
-    castSkill(target) {
-        this.isCasting = true;
-        this.mp = 0;
-        const skillDamage = this.atk * 3;
-        target.hp -= skillDamage;
-        logText.innerText = `💥 ${this.name} 釋放了大招！造成 ${skillDamage} 傷害`;
-        
-        // 1秒後解除施法特效
-        setTimeout(() => { this.isCasting = false; }, 500);
-    }
+    draw();
+    requestAnimationFrame(update);
 }
 
-// 3. 初始化
-const player1 = new Champion("蓋倫", 1, 2, "#3498db", "Blue");
-const player2 = new Champion("諾叔", 6, 2, "#e74c3c", "Red");
-
-// 4. 繪製背景格子
-function drawGrid() {
-    ctx.strokeStyle = "#444";
-    for (let i = 0; i <= COLS; i++) {
-        ctx.moveTo(i * TILE_SIZE, 0);
-        ctx.lineTo(i * TILE_SIZE, ROWS * TILE_SIZE);
-    }
-    for (let j = 0; j <= ROWS; j++) {
-        ctx.moveTo(0, j * TILE_SIZE);
-        ctx.lineTo(COLS * TILE_SIZE, j * TILE_SIZE);
-    }
-    ctx.stroke();
-}
-
-// 5. 遊戲主循環 (為了格子對戰感，我們降低偵數或使用計時器)
-let frameCount = 0;
-function gameLoop() {
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-    drawGrid();
-
-    player1.draw();
-    player2.draw();
-
-    // 每隔 60 幀 (約1秒) 行動一次，模擬回合感
-    if (frameCount % 60 === 0 && player1.hp > 0 && player2.hp > 0) {
-        player1.act(player2);
-        player2.act(player1);
-    }
-
-    if (player1.hp <= 0 || player2.hp <= 0) {
-        const winner = player1.hp > 0 ? player1.name : player2.name;
-        document.getElementById('status').innerText = "戰鬥結束！贏家是：" + winner;
-    }
-
-    frameCount++;
-    requestAnimationFrame(gameLoop);
-}
-
-gameLoop();
+initShop();
+update();
 </script>
+</body>
+</html>
 </body>
 </html>
