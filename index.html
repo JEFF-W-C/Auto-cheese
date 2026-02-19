@@ -2,19 +2,21 @@
 <html lang="zh-TW">
 <head>
     <meta charset="UTF-8">
-    <title>自走棋：備戰與戰鬥循環</title>
+    <title>自走棋：戰鬥進化版</title>
     <style>
         body { display: flex; flex-direction: column; align-items: center; background: #1a1a1a; color: #eee; font-family: sans-serif; margin: 0; overflow: hidden; }
-        #ui-layer { width: 640px; display: flex; justify-content: space-between; padding: 10px; background: #333; }
+        #ui-layer { width: 640px; display: flex; justify-content: space-between; align-items: center; padding: 10px; background: #333; }
         canvas { border: 2px solid #555; background: #2c3e50; }
         .timer { font-size: 24px; font-weight: bold; color: #f1c40f; }
-        .phase-name { font-size: 20px; }
+        button { background: #27ae60; color: white; border: none; padding: 8px 15px; border-radius: 4px; cursor: pointer; font-weight: bold; }
+        button:hover { background: #2ecc71; }
     </style>
 </head>
 <body>
 
     <div id="ui-layer">
-        <div class="phase-name" id="phaseDisplay">階段：備備戰中</div>
+        <div id="phaseDisplay">階段：備戰中</div>
+        <button id="startBattleBtn">立即開始戰鬥</button>
         <div class="timer" id="timerDisplay">30s</div>
     </div>
     <canvas id="gameCanvas" width="640" height="600"></canvas>
@@ -24,205 +26,201 @@ const canvas = document.getElementById('gameCanvas');
 const ctx = canvas.getContext('2d');
 const phaseDisplay = document.getElementById('phaseDisplay');
 const timerDisplay = document.getElementById('timerDisplay');
+const startBtn = document.getElementById('startBattleBtn');
 
-// 遊戲常量
 const TILE_SIZE = 80;
-const ROWS = 5; // 戰鬥區域
+const ROWS = 5;
 const COLS = 8;
-const SHOP_Y = 480; // 商店起始高度
+const SHOP_Y = 480;
 
-// 遊戲狀態
 const PHASES = { PREP: '備戰階段', BATTLE: '戰鬥階段' };
 let currentPhase = PHASES.PREP;
 let timeLeft = 30;
 let lastTime = Date.now();
 
-// 棋子池
 const CHAMP_POOL = ["蓋倫", "諾叔", "艾希", "拉克絲", "犽宿"];
-
-// 商店資料
 let shopSlots = [];
 let draggingItem = null;
-let playerUnit = null; // 玩家場上的棋子
-let enemyUnit = null;  // 電腦棋子
+let playerUnits = []; 
+let enemyUnits = [];
 
+// 1. 初始化商店
 function initShop() {
     shopSlots = [];
     for(let i=0; i<5; i++) {
-        const name = CHAMP_POOL[Math.floor(Math.random() * CHAMP_POOL.length)];
         shopSlots.push({
-            name: name,
-            x: i * 120 + 60,
-            y: SHOP_Y + 60,
-            width: 100,
-            height: 60,
-            color: "#8e44ad"
+            name: CHAMP_POOL[Math.floor(Math.random() * CHAMP_POOL.length)],
+            x: i * 120 + 60, y: SHOP_Y + 60, color: "#8e44ad"
         });
     }
 }
 
-// 初始化一個電腦對手
-function spawnEnemy() {
-    enemyUnit = {
-        name: "電腦小兵",
-        gridX: 6,
-        gridY: 2,
-        hp: 200, maxHp: 200, mp: 0, maxMp: 100,
-        color: "#e74c3c", team: "Red",
-        x: 0, y: 0
+// 2. 初始化敵人 (兩隻小兵，血量減半)
+function spawnEnemies() {
+    enemyUnits = [
+        createUnit("小兵 A", 6, 1, "#e74c3c", "Red", 100),
+        createUnit("小兵 B", 6, 3, "#e74c3c", "Red", 100)
+    ];
+}
+
+function createUnit(name, gx, gy, color, team, hp = 200) {
+    return {
+        name, gridX: gx, gridY: gy,
+        hp: hp, maxHp: hp, mp: 0, maxMp: 50,
+        color, team, atk: 15,
+        visualScale: 1.0, // 用於攻擊動畫
+        lastAttackTime: 0
     };
-    updatePixelPos(enemyUnit);
 }
 
-function updatePixelPos(unit) {
-    unit.x = unit.gridX * TILE_SIZE + TILE_SIZE / 2;
-    unit.y = unit.gridY * TILE_SIZE + TILE_SIZE / 2;
-}
+// 跳過備戰按鈕
+startBtn.onclick = () => { if(currentPhase === PHASES.PREP) timeLeft = 0; };
 
-// 滑鼠事件
+// 滑鼠事件 (拖曳邏輯)
 let mouseX = 0, mouseY = 0;
 canvas.addEventListener('mousedown', (e) => {
     if (currentPhase !== PHASES.PREP) return;
     const rect = canvas.getBoundingClientRect();
-    const x = e.clientX - rect.left;
-    const y = e.clientY - rect.top;
-
-    shopSlots.forEach((slot, index) => {
-        if (x > slot.x - 50 && x < slot.x + 50 && y > slot.y - 30 && y < slot.y + 30) {
-            draggingItem = { ...slot, shopIndex: index };
+    const x = e.clientX - rect.left, y = e.clientY - rect.top;
+    shopSlots.forEach((slot, i) => {
+        if (Math.abs(x - slot.x) < 50 && Math.abs(y - slot.y) < 30 && slot.name !== "已售出") {
+            draggingItem = { ...slot, shopIndex: i };
         }
     });
 });
 
 canvas.addEventListener('mousemove', (e) => {
     const rect = canvas.getBoundingClientRect();
-    mouseX = e.clientX - rect.left;
-    mouseY = e.clientY - rect.top;
+    mouseX = e.clientX - rect.left; mouseY = e.clientY - rect.top;
 });
 
-canvas.addEventListener('mouseup', (e) => {
+canvas.addEventListener('mouseup', () => {
     if (draggingItem) {
-        // 判斷是否放在戰鬥格內 (前三行)
-        const gx = Math.floor(mouseX / TILE_SIZE);
-        const gy = Math.floor(mouseY / TILE_SIZE);
-
-        if (gy < ROWS && gx < COLS) {
-            playerUnit = {
-                name: draggingItem.name,
-                gridX: gx, gridY: gy,
-                hp: 200, maxHp: 200, mp: 0, maxMp: 100,
-                color: "#3498db", team: "Blue"
-            };
-            updatePixelPos(playerUnit);
-            shopSlots[draggingItem.shopIndex] = { name: "已售出", color: "#555" }; // 買完變灰色
+        const gx = Math.floor(mouseX / TILE_SIZE), gy = Math.floor(mouseY / TILE_SIZE);
+        if (gy < ROWS && gx < COLS && playerUnits.length < 1) { // 限制一隻角色
+            playerUnits.push(createUnit(draggingItem.name, gx, gy, "#3498db", "Blue"));
+            shopSlots[draggingItem.shopIndex].name = "已售出";
         }
         draggingItem = null;
     }
 });
 
-// 戰鬥邏輯
-function battleLogic() {
-    if (!playerUnit || !enemyUnit) return;
+// 3. 戰鬥核心邏輯
+function updateBattle() {
+    const allUnits = [...playerUnits, ...enemyUnits];
     
-    // 簡單的互相扣血
-    if (Math.abs(playerUnit.gridX - enemyUnit.gridX) + Math.abs(playerUnit.gridY - enemyUnit.gridY) <= 1) {
-        playerUnit.hp -= 0.5;
-        enemyUnit.hp -= 0.5;
-    } else {
-        // 向對方移動
-        if (playerUnit.gridX < enemyUnit.gridX) playerUnit.gridX++;
-        updatePixelPos(playerUnit);
+    allUnits.forEach(unit => {
+        if (unit.hp <= 0) return;
+        
+        // 找最近的敵人
+        const enemies = unit.team === "Blue" ? enemyUnits : playerUnits;
+        const target = enemies.find(e => e.hp > 0);
+        if (!target) return;
+
+        const dist = Math.abs(unit.gridX - target.gridX) + Math.abs(unit.gridY - target.gridY);
+        const now = Date.now();
+
+        if (dist <= 1) {
+            // 攻擊間隔 (每秒攻擊一次)
+            if (now - unit.lastAttackTime > 1000) {
+                performAttack(unit, target);
+                unit.lastAttackTime = now;
+            }
+        } else if (now - unit.lastAttackTime > 1000) {
+            // 移動
+            if (unit.gridX < target.gridX) unit.gridX++;
+            else if (unit.gridX > target.gridX) unit.gridX--;
+            else if (unit.gridY < target.gridY) unit.gridY++;
+            else if (unit.gridY > target.gridY) unit.gridY--;
+            unit.lastAttackTime = now;
+        }
+    });
+}
+
+function performAttack(attacker, target) {
+    attacker.visualScale = 1.4; // 觸發放大動畫
+    let damage = attacker.atk;
+    
+    attacker.mp += 10;
+    if (attacker.mp >= attacker.maxMp) {
+        damage *= 3; // 三倍技能傷害
+        attacker.mp = 0;
+        console.log(attacker.name + " 釋放技能！");
     }
+    
+    target.hp -= damage;
 }
 
 function draw() {
     ctx.clearRect(0, 0, canvas.width, canvas.height);
-
-    // 1. 畫格子
+    
+    // 畫格子
     ctx.strokeStyle = "#444";
-    for(let i=0; i<=COLS; i++) {
-        ctx.beginPath(); ctx.moveTo(i*TILE_SIZE, 0); ctx.lineTo(i*TILE_SIZE, ROWS*TILE_SIZE); ctx.stroke();
-    }
-    for(let j=0; j<=ROWS; j++) {
-        ctx.beginPath(); ctx.moveTo(0, j*TILE_SIZE); ctx.lineTo(COLS*TILE_SIZE, j*TILE_SIZE); ctx.stroke();
-    }
+    for(let i=0; i<=COLS; i++) { ctx.beginPath(); ctx.moveTo(i*TILE_SIZE, 0); ctx.lineTo(i*TILE_SIZE, ROWS*TILE_SIZE); ctx.stroke(); }
+    for(let j=0; j<=ROWS; j++) { ctx.beginPath(); ctx.moveTo(0, j*TILE_SIZE); ctx.lineTo(COLS*TILE_SIZE, j*TILE_SIZE); ctx.stroke(); }
 
-    // 2. 畫商店區
-    ctx.fillStyle = "#444";
-    ctx.fillRect(0, SHOP_Y, canvas.width, 120);
-    shopSlots.forEach(slot => {
-        ctx.fillStyle = slot.color || "#8e44ad";
-        ctx.fillRect(slot.x - 50, slot.y - 30, 100, 60);
-        ctx.fillStyle = "white";
-        ctx.textAlign = "center";
-        ctx.fillText(slot.name, slot.x, slot.y + 5);
+    // 畫棋子
+    [...playerUnits, ...enemyUnits].forEach(u => {
+        if (u.hp <= 0) return;
+        const px = u.gridX * TILE_SIZE + TILE_SIZE/2;
+        const py = u.gridY * TILE_SIZE + TILE_SIZE/2;
+
+        // 處理動畫縮放回彈
+        if (u.visualScale > 1.0) u.visualScale -= 0.05;
+
+        ctx.fillStyle = u.color;
+        ctx.beginPath();
+        ctx.arc(px, py, 25 * u.visualScale, 0, Math.PI*2);
+        ctx.fill();
+
+        // 血條與法力條
+        ctx.fillStyle = "red"; ctx.fillRect(px-25, py-45, 50, 4);
+        ctx.fillStyle = "green"; ctx.fillRect(px-25, py-45, (u.hp/u.maxHp)*50, 4);
+        ctx.fillStyle = "#3498db"; ctx.fillRect(px-25, py-38, (u.mp/u.maxMp)*50, 4);
+        
+        ctx.fillStyle = "white"; ctx.textAlign = "center";
+        ctx.fillText(u.name, px, py + 5);
     });
 
-    // 3. 畫棋子
-    if (playerUnit) drawUnit(playerUnit);
-    if (enemyUnit) drawUnit(enemyUnit);
-
-    // 4. 畫拖曳中的影子
+    // 商店與拖曳 (略，同之前邏輯)
+    ctx.fillStyle = "#444"; ctx.fillRect(0, SHOP_Y, canvas.width, 120);
+    shopSlots.forEach(s => {
+        ctx.fillStyle = s.name === "已售出" ? "#555" : s.color;
+        ctx.fillRect(s.x-50, s.y-30, 100, 60);
+        ctx.fillStyle = "white"; ctx.fillText(s.name, s.x, s.y+5);
+    });
     if (draggingItem) {
-        ctx.globalAlpha = 0.5;
-        ctx.fillStyle = "yellow";
-        ctx.fillRect(mouseX - 50, mouseY - 30, 100, 60);
-        ctx.globalAlpha = 1.0;
+        ctx.globalAlpha = 0.5; ctx.fillStyle = "yellow";
+        ctx.fillRect(mouseX-50, mouseY-30, 100, 60); ctx.globalAlpha = 1.0;
     }
 }
 
-function drawUnit(unit) {
-    if (unit.hp <= 0) return;
-    ctx.fillStyle = unit.color;
-    ctx.beginPath();
-    ctx.arc(unit.x, unit.y, 25, 0, Math.PI*2);
-    ctx.fill();
-    // 血條
-    ctx.fillStyle = "red";
-    ctx.fillRect(unit.x - 25, unit.y - 40, 50, 5);
-    ctx.fillStyle = "green";
-    ctx.fillRect(unit.x - 25, unit.y - 40, (unit.hp/unit.maxHp)*50, 5);
-    ctx.fillStyle = "white";
-    ctx.fillText(unit.name, unit.x, unit.y + 5);
-}
-
-// 核心循環與計時器
-function update() {
+function mainLoop() {
     const now = Date.now();
     if (now - lastTime >= 1000) {
-        timeLeft--;
-        lastTime = now;
+        timeLeft--; lastTime = now;
         if (timeLeft <= 0) {
-            // 切換階段
             if (currentPhase === PHASES.PREP) {
-                currentPhase = PHASES.BATTLE;
-                timeLeft = 30;
-                spawnEnemy();
+                currentPhase = PHASES.BATTLE; timeLeft = 30; spawnEnemies();
+                startBtn.style.display = "none";
             } else {
-                currentPhase = PHASES.PREP;
-                timeLeft = 30;
-                playerUnit = null; // 回合結束清空場地
-                enemyUnit = null;
-                initShop();
+                currentPhase = PHASES.PREP; timeLeft = 30;
+                playerUnits = []; enemyUnits = []; initShop();
+                startBtn.style.display = "block";
             }
         }
     }
 
-    if (currentPhase === PHASES.BATTLE) {
-        battleLogic();
-    }
-
+    if (currentPhase === PHASES.BATTLE) updateBattle();
+    
     phaseDisplay.innerText = `階段：${currentPhase}`;
     timerDisplay.innerText = `${timeLeft}s`;
-
     draw();
-    requestAnimationFrame(update);
+    requestAnimationFrame(mainLoop);
 }
 
 initShop();
-update();
+mainLoop();
 </script>
-</body>
-</html>
 </body>
 </html>
